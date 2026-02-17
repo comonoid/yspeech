@@ -1,0 +1,11 @@
+dist-newstyle/
+.cabal-file
+*.hi
+*.o
+*.dyn_hi
+*.dyn_o
+*.eventlog
+*.prof
+*.hp
+*.aux
+result

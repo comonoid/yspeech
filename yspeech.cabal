@@ -1,0 +1,39 @@
+cabal-version: 2.4
+name:          yspeech
+version:       0.1.0.0
+synopsis:      CLI for async speech recognition via Yandex SpeechKit
+license:       BSD-3-Clause
+build-type:    Simple
+
+executable yspeech
+  hs-source-dirs:   app, src
+  main-is:          Main.hs
+  default-language: Haskell2010
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+  other-modules:
+    YSpeech.Types
+    YSpeech.Config
+    YSpeech.Audio.Split
+    YSpeech.SpeechKit.Api
+    YSpeech.SpeechKit.Types
+    YSpeech.Result.Merge
+    YSpeech.Result.Format
+
+  build-depends:
+    base                 >= 4.14  && < 5,
+    text                 >= 1.2   && < 2.2,
+    bytestring           >= 0.10  && < 0.13,
+    base64-bytestring    >= 1.2   && < 1.3,
+    aeson                >= 2.0   && < 2.3,
+    http-client          >= 0.7   && < 0.8,
+    http-client-tls      >= 0.3   && < 0.4,
+    http-types           >= 0.12  && < 0.13,
+    optparse-applicative >= 0.16  && < 0.19,
+    typed-process        >= 0.2   && < 0.3,
+    async                >= 2.2   && < 2.3,
+    temporary            >= 1.3   && < 1.4,
+    directory            >= 1.3   && < 1.4,
+    filepath             >= 1.4   && < 1.6,
+    process              >= 1.6   && < 1.7,
+    zlib                 >= 0.6   && < 0.8
