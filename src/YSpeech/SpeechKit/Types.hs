@@ -95,13 +95,14 @@ instance ToJSON LanguageRestrictionOptions where
     ]
 
 -- | Build a recognition request with audio content embedded.
-mkRecognizeRequest :: ByteString -> Text -> Text -> RecognizeFileRequest
-mkRecognizeRequest audioBytes model language = RecognizeFileRequest
+-- containerType: "MP3", "OGG_OPUS", or "WAV"
+mkRecognizeRequest :: ByteString -> Text -> Text -> Text -> RecognizeFileRequest
+mkRecognizeRequest audioBytes containerType model language = RecognizeFileRequest
   { rfrContent = audioBytes
   , rfrRecognitionModel = RecognitionModelOptions
       { rmoModel = model
       , rmoAudioFormat = AudioFormatOptions
-          { afoContainerAudio = ContainerAudio "MP3" }
+          { afoContainerAudio = ContainerAudio containerType }
       , rmoAudioProcessingType = "FULL_DATA"
       , rmoLanguageRestriction = LanguageRestrictionOptions
           { lroRestrictionType = "WHITELIST"
@@ -145,19 +146,19 @@ data StreamingResponse = StreamingResponse
 
 instance FromJSON StreamingResponse where
   parseJSON = withObject "StreamingResponse" $ \o -> StreamingResponse
-    <$> o .:? "channel_tag"
+    <$> o .:? "channelTag"
     <*> o .:? "final"
-    <*> o .:? "final_refinement"
+    <*> o .:? "finalRefinement"
 
 data FinalRefinement = FinalRefinement
-  { frFinalIndex     :: Maybe Int
+  { frFinalIndex     :: Maybe Text
   , frNormalizedText :: Maybe AlternativeUpdate
   } deriving (Show, Generic)
 
 instance FromJSON FinalRefinement where
   parseJSON = withObject "FinalRefinement" $ \o -> FinalRefinement
-    <$> o .:? "final_index"
-    <*> o .:? "normalized_text"
+    <$> o .:? "finalIndex"
+    <*> o .:? "normalizedText"
 
 data AlternativeUpdate = AlternativeUpdate
   { auAlternatives :: [Alternative]
@@ -179,8 +180,8 @@ instance FromJSON Alternative where
   parseJSON = withObject "Alternative" $ \o -> Alternative
     <$> o .:? "text" .!= ""
     <*> o .:? "words" .!= []
-    <*> o .:? "start_time_ms"
-    <*> o .:? "end_time_ms"
+    <*> o .:? "startTimeMs"
+    <*> o .:? "endTimeMs"
     <*> o .:? "confidence"
 
 data RecWord = RecWord
@@ -192,5 +193,5 @@ data RecWord = RecWord
 instance FromJSON RecWord where
   parseJSON = withObject "RecWord" $ \o -> RecWord
     <$> o .:? "text" .!= ""
-    <*> o .:? "start_time_ms"
-    <*> o .:? "end_time_ms"
+    <*> o .:? "startTimeMs"
+    <*> o .:? "endTimeMs"

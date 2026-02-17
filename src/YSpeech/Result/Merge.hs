@@ -37,10 +37,9 @@ chunkToUtterances chunk responses =
 extractBestText :: StreamingResponse -> Maybe (Text, Text, Int, Int)
 extractBestText sr =
   let speaker = fromMaybe "" (srChannelTag sr)
-      -- Try final_refinement.normalized_text first, then fall back to final
-      mAltUpdate = case srFinalRefinement sr of
-        Just fr -> frNormalizedText fr
-        Nothing -> srFinal sr
+      -- Use only finalRefinement (normalized text).
+      -- Ignore raw 'final' to avoid duplicates.
+      mAltUpdate = srFinalRefinement sr >>= frNormalizedText
   in case mAltUpdate of
     Nothing -> Nothing
     Just au -> case auAlternatives au of

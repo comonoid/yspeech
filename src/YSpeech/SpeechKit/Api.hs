@@ -10,10 +10,10 @@ module YSpeech.SpeechKit.Api
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (throwIO)
-import qualified Codec.Compression.GZip as GZip
-import Data.Aeson (encode, eitherDecode)
+import Data.Aeson (encode, eitherDecode, FromJSON(..), withObject, (.:))
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
+import Data.Char (toLower)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -24,6 +24,7 @@ import Network.HTTP.Client
     , parseRequest
     )
 import Network.HTTP.Types.Status (statusCode)
+import System.FilePath (takeExtension)
 import System.IO (hFlush, stderr)
 
 import YSpeech.Types
@@ -36,38 +37,23 @@ operationHost :: String
 operationHost = "https://operation.api.cloud.yandex.net"
 
 -- | Read a chunk file and submit it for async recognition.
--- Tries gzip-compressed request first; falls back to uncompressed on 415.
 -- Returns the operation ID.
 recognizeFile :: Manager -> AppConfig -> AudioChunk -> IO Text
 recognizeFile mgr cfg chunk = do
   audioBytes <- BS.readFile (chunkFilePath chunk)
-  let body = encode $ mkRecognizeRequest audioBytes (acModel cfg) (acLanguage cfg)
-      gzBody = GZip.compress body
+  let ctype = detectContainerType (chunkFilePath chunk)
+      body = encode $ mkRecognizeRequest audioBytes ctype (acModel cfg) (acLanguage cfg)
   req0 <- parseRequest $ sttHost ++ "/stt/v3/recognizeFileAsync"
-  let baseHeaders =
-        [ ("Content-Type", "application/json")
-        , ("x-folder-id", TE.encodeUtf8 (acFolderId cfg))
-        ]
-      gzReq = addAuth cfg $ req0
+  let req = addAuth cfg $ req0
         { method = "POST"
-        , requestBody = RequestBodyLBS gzBody
-        , requestHeaders = ("Content-Encoding", "gzip") : baseHeaders
-                           ++ requestHeaders req0
+        , requestBody = RequestBodyLBS body
+        , requestHeaders =
+            [ ("Content-Type", "application/json")
+            , ("x-folder-id", TE.encodeUtf8 (acFolderId cfg))
+            ] ++ requestHeaders req0
         }
-  resp <- httpLbs gzReq mgr
-  let status = statusCode (responseStatus resp)
-  if status == 415
-    then do
-      logMsg "  gzip not supported by server, retrying uncompressed..."
-      let plainReq = addAuth cfg $ req0
-            { method = "POST"
-            , requestBody = RequestBodyLBS body
-            , requestHeaders = baseHeaders ++ requestHeaders req0
-            }
-      resp' <- httpLbs plainReq mgr
-      parseOperationResponse resp'
-    else
-      parseOperationResponse resp
+  resp <- httpLbs req mgr
+  parseOperationResponse resp
 
 parseOperationResponse :: Response LBS.ByteString -> IO Text
 parseOperationResponse resp = do
@@ -96,6 +82,8 @@ pollOperation mgr cfg opId' = do
     else throwIO $ ApiRequestError status (decodeBody respBody)
 
 -- | Fetch recognition results for a completed operation.
+-- The REST endpoint returns NDJSON: one JSON object per line,
+-- each wrapped in {"result": <StreamingResponse>}.
 getRecognition :: Manager -> AppConfig -> Text -> IO [StreamingResponse]
 getRecognition mgr cfg opId' = do
   req0 <- parseRequest $ sttHost ++ "/stt/v3/getRecognition?operation_id="
@@ -105,11 +93,26 @@ getRecognition mgr cfg opId' = do
   let status = statusCode (responseStatus resp)
       respBody = responseBody resp
   if status >= 200 && status < 300
-    then case eitherDecode respBody of
-      Right srs -> pure srs
-      Left e    -> throwIO $ ResultParseError $
-                     "Cannot parse recognition results: " <> T.pack e
+    then parseNDJSON respBody
     else throwIO $ ApiRequestError status (decodeBody respBody)
+
+-- | Parse NDJSON response where each line is {"result": <StreamingResponse>}.
+parseNDJSON :: LBS.ByteString -> IO [StreamingResponse]
+parseNDJSON body = do
+  let ls = filter (not . LBS.null) $ LBS.split 0x0A body  -- split on newline
+      parse1 line = case eitherDecode line of
+        Right wrapper -> pure (ndjResult wrapper)
+        Left e -> throwIO $ ResultParseError $
+                    "Cannot parse NDJSON line: " <> T.pack e
+                    <> " | line: " <> T.pack (take 200 (show line))
+  mapM parse1 ls
+
+-- | Wrapper for {"result": ...} NDJSON envelope.
+data NDJSONWrapper = NDJSONWrapper { ndjResult :: StreamingResponse }
+
+instance FromJSON NDJSONWrapper where
+  parseJSON = withObject "NDJSONWrapper" $ \o ->
+    NDJSONWrapper <$> o .: "result"
 
 -- | Wait for an operation to complete, polling every 30 seconds.
 waitForCompletion :: Manager -> AppConfig -> Text -> IO ()
@@ -143,3 +146,12 @@ decodeBody = T.pack . take 1000 . show
 
 logMsg :: Text -> IO ()
 logMsg msg = TIO.hPutStrLn stderr msg >> hFlush stderr
+
+-- | Detect SpeechKit container type from file extension.
+detectContainerType :: FilePath -> Text
+detectContainerType fp =
+  case map toLower (takeExtension fp) of
+    ".ogg"  -> "OGG_OPUS"
+    ".opus" -> "OGG_OPUS"
+    ".wav"  -> "WAV"
+    _       -> "MP3"
