@@ -11,11 +11,11 @@ import Data.Char (isSpace)
 import Data.List (sort)
 import Data.Text (Text)
 import qualified Data.Text as T
-import System.Directory (listDirectory)
+import System.Directory (listDirectory, getFileSize)
 import System.Exit (ExitCode(..))
 import System.FilePath ((</>), takeExtension)
 import System.Process.Typed
-    ( proc, readProcess, setStdin, closed )
+    ( proc, readProcess, setStdin, nullStream )
 
 import YSpeech.Types
 
@@ -23,7 +23,7 @@ import YSpeech.Types
 probeDuration :: FilePath -> IO Double
 probeDuration path = do
   (exitCode, out, err) <- readProcess $
-    setStdin closed $
+    setStdin nullStream $
     proc "ffprobe"
       [ "-v", "quiet"
       , "-show_entries", "format=duration"
@@ -44,7 +44,7 @@ probeDuration path = do
 probeChannels :: FilePath -> IO Int
 probeChannels path = do
   (exitCode, out, err) <- readProcess $
-    setStdin closed $
+    setStdin nullStream $
     proc "ffprobe"
       [ "-v", "quiet"
       , "-show_entries", "stream=channels"
@@ -61,6 +61,12 @@ probeChannels path = do
         [(n, "")] -> pure n
         _         -> pure 2  -- assume stereo if can't parse
 
+-- | Maximum byte size of a single chunk. The SpeechKit gRPC endpoint
+-- rejects messages larger than 100 MiB (104857600 bytes); we leave a margin
+-- to absorb protobuf overhead and VBR size variance between segments.
+maxChunkBytes :: Integer
+maxChunkBytes = 90 * 1024 * 1024
+
 -- | Split an MP3 file into chunks, converting to mono if needed.
 -- If the input is already mono and fits in one chunk, returns it as-is.
 -- Otherwise uses ffmpeg to split and/or downmix to mono.
@@ -71,27 +77,28 @@ splitAudio :: FilePath    -- ^ Input MP3 file
 splitAudio inputFile chunkSec tmpDir = do
   totalDur <- probeDuration inputFile
   channels <- probeChannels inputFile
+  fileSize <- getFileSize inputFile
 
   let needsMono = channels > 1
-      needsSplit = totalDur > fromIntegral chunkSec + 60
+      -- Bytes per second of the input. SpeechKit (gRPC) rejects any single
+      -- message above ~100 MiB, so duration is not the only limit: a short
+      -- but high-bitrate file can still be too large. We also assume a
+      -- re-encode never exceeds ~256 kbit/s mono, so the cap stays safe even
+      -- when the input itself is low-bitrate (re-encoding could inflate it).
+      inBytesPerSec  = fromIntegral fileSize / totalDur :: Double
+      encBytesPerSec = 256 * 1000 / 8 :: Double
+      bytesPerSec    = max inBytesPerSec encBytesPerSec
+      -- Longest chunk that keeps a single API message under the size cap.
+      sizeCapSec     = floor (fromIntegral maxChunkBytes / bytesPerSec) :: Int
+      -- Effective chunk length: smaller of the user's time limit and the
+      -- size-derived limit.
+      effChunkSec    = max 1 (min chunkSec sizeCapSec)
+      needsSplit     = totalDur > fromIntegral effChunkSec + 60
 
   case (needsSplit, needsMono) of
-    -- Already mono, fits in one chunk: use original file
+    -- Already mono, fits in one chunk (by time and size): use original file
     (False, False) ->
       pure [AudioChunk 0 inputFile 0 totalDur]
-
-    -- Already mono, needs splitting: segment with stream copy
-    (True, False) -> do
-      let outPattern = tmpDir </> "chunk_%04d.mp3"
-      runFfmpeg
-        [ "-i", inputFile
-        , "-f", "segment"
-        , "-segment_time", show chunkSec
-        , "-c", "copy"
-        , "-reset_timestamps", "1"
-        , outPattern
-        ]
-      collectChunks tmpDir chunkSec totalDur
 
     -- Stereo, fits in one chunk: just downmix to mono
     (False, True) -> do
@@ -105,30 +112,50 @@ splitAudio inputFile chunkSec tmpDir = do
       dur <- probeDuration outPath
       pure [AudioChunk 0 outPath 0 dur]
 
-    -- Stereo and needs splitting: downmix + segment in one pass
-    (True, True) -> do
+    -- Needs splitting (by time and/or size): re-encode to mono MP3 and
+    -- segment in one pass. We always re-encode rather than stream-copy so
+    -- the operation is correct for any input codec/container and so chunk
+    -- sizes line up with the size cap computed above.
+    (True, _) -> do
       let outPattern = tmpDir </> "chunk_%04d.mp3"
       runFfmpeg
         [ "-i", inputFile
         , "-ac", "1"
         , "-c:a", "libmp3lame", "-q:a", "2"
         , "-f", "segment"
-        , "-segment_time", show chunkSec
+        , "-segment_time", show effChunkSec
         , "-reset_timestamps", "1"
         , outPattern
         ]
-      collectChunks tmpDir chunkSec totalDur
+      collectChunks tmpDir effChunkSec totalDur
 
 runFfmpeg :: [String] -> IO ()
 runFfmpeg args = do
+  -- -nostdin is essential: we run ffmpeg with stdin redirected to /dev/null
+  -- (setStdin nullStream). If stdin were instead *closed*, ffmpeg's input
+  -- file would be assigned fd 0 and ffmpeg's interactive-key reader would
+  -- consume bytes from it, corrupting the demuxer and producing an endless
+  -- stream of bogus decode errors. -nostdin disables that reader outright.
+  let prefix = [ "-v", "warning", "-y", "-nostdin" ]
   (exitCode, _out, err) <- readProcess $
-    setStdin closed $
-    proc "ffmpeg" (["-v", "warning", "-y"] ++ args)
+    setStdin nullStream $
+    proc "ffmpeg" (prefix ++ args)
   case exitCode of
     ExitFailure c ->
       throwIO $ AudioSplitError $
-        "ffmpeg exited with code " <> showT c <> ": " <> bsToText err
+        "ffmpeg exited with code " <> showT c <> ": " <> lastLines 20 (bsToText err)
     ExitSuccess -> pure ()
+
+-- | Keep only the last @n@ lines of a (possibly enormous) log, so a flood of
+-- per-frame decoder warnings does not produce a multi-thousand-line exception.
+lastLines :: Int -> Text -> Text
+lastLines n txt =
+  let ls = T.lines txt
+      dropped = length ls - n
+  in if dropped > 0
+       then "(... " <> showT dropped <> " more line(s) ...)\n"
+              <> T.unlines (drop dropped ls)
+       else txt
 
 collectChunks :: FilePath -> Int -> Double -> IO [AudioChunk]
 collectChunks tmpDir chunkSec totalDur = do
