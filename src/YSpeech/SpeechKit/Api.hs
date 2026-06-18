@@ -17,7 +17,6 @@ import Data.Char (toLower)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import qualified Data.Text.IO as TIO
 import Network.HTTP.Client
     ( Manager, Request(..), RequestBody(..), Response
     , httpLbs, responseStatus, responseBody
@@ -25,7 +24,6 @@ import Network.HTTP.Client
     )
 import Network.HTTP.Types.Status (statusCode)
 import System.FilePath (takeExtension)
-import System.IO (hFlush, stderr)
 
 import YSpeech.Types
 import YSpeech.SpeechKit.Types
@@ -143,9 +141,6 @@ addAuth cfg req = req
 
 decodeBody :: LBS.ByteString -> Text
 decodeBody = T.pack . take 1000 . show
-
-logMsg :: Text -> IO ()
-logMsg msg = TIO.hPutStrLn stderr msg >> hFlush stderr
 
 -- | Detect SpeechKit container type from file extension.
 detectContainerType :: FilePath -> Text

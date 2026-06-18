@@ -140,25 +140,21 @@ instance FromJSON OperationError where
 
 data StreamingResponse = StreamingResponse
   { srChannelTag      :: Maybe Text
-  , srFinal           :: Maybe AlternativeUpdate
   , srFinalRefinement :: Maybe FinalRefinement
   } deriving (Show, Generic)
 
 instance FromJSON StreamingResponse where
   parseJSON = withObject "StreamingResponse" $ \o -> StreamingResponse
     <$> o .:? "channelTag"
-    <*> o .:? "final"
     <*> o .:? "finalRefinement"
 
 data FinalRefinement = FinalRefinement
-  { frFinalIndex     :: Maybe Text
-  , frNormalizedText :: Maybe AlternativeUpdate
+  { frNormalizedText :: Maybe AlternativeUpdate
   } deriving (Show, Generic)
 
 instance FromJSON FinalRefinement where
   parseJSON = withObject "FinalRefinement" $ \o -> FinalRefinement
-    <$> o .:? "finalIndex"
-    <*> o .:? "normalizedText"
+    <$> o .:? "normalizedText"
 
 data AlternativeUpdate = AlternativeUpdate
   { auAlternatives :: [Alternative]
@@ -173,7 +169,6 @@ data Alternative = Alternative
   , altWords       :: [RecWord]
   , altStartTimeMs :: Maybe Text  -- proto int64 as string
   , altEndTimeMs   :: Maybe Text
-  , altConfidence  :: Maybe Double
   } deriving (Show, Generic)
 
 instance FromJSON Alternative where
@@ -182,7 +177,6 @@ instance FromJSON Alternative where
     <*> o .:? "words" .!= []
     <*> o .:? "startTimeMs"
     <*> o .:? "endTimeMs"
-    <*> o .:? "confidence"
 
 data RecWord = RecWord
   { rwText        :: Text

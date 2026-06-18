@@ -61,11 +61,13 @@ probeChannels path = do
         [(n, "")] -> pure n
         _         -> pure 2  -- assume stereo if can't parse
 
--- | Maximum byte size of a single chunk. The SpeechKit gRPC endpoint
--- rejects messages larger than 100 MiB (104857600 bytes); we leave a margin
--- to absorb protobuf overhead and VBR size variance between segments.
+-- | Maximum byte size of a single chunk *file*. The SpeechKit
+-- recognizeFileAsync endpoint rejects request bodies larger than 100 MiB.
+-- We send the audio base64-encoded inside JSON, which inflates it by ~4/3,
+-- so the file cap must be ~75 MiB to keep the body under 100 MiB. We use
+-- 70 MiB to also absorb JSON overhead and VBR size variance between segments.
 maxChunkBytes :: Integer
-maxChunkBytes = 90 * 1024 * 1024
+maxChunkBytes = 70 * 1024 * 1024
 
 -- | Split an MP3 file into chunks, converting to mono if needed.
 -- If the input is already mono and fits in one chunk, returns it as-is.
